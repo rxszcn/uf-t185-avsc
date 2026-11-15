@@ -223,6 +223,54 @@ suite('utils', () => {
         writer: function (s) { this.writeString(s); }
       });
 
+      test('valid surrogate pairs roundtrip across paths', () => {
+        // Astral characters (valid surrogate pairs) must round-trip
+        // byte-identically through every write path and threshold.
+        let elems = [
+          '𝄞', // U+1D11E: small-string path.
+          'a'.repeat(19) + '𝄞', // 21 code units: small path edge.
+          'a'.repeat(20) + '𝄞', // 22 code units: large path edge.
+          '𝄞'.repeat(11), // Pair-heavy large path.
+          'x'.repeat(5000) + '𝄞', // Past the shared encode buffer.
+          '𐏿'
+        ];
+        let tap = Tap.withCapacity(16384);
+        elems.forEach((s) => {
+          tap.pos = 0;
+          tap.writeString(s);
+          let pos = tap.pos;
+          tap.pos = 0;
+          assert.strictEqual(tap.readString(), s);
+          assert.strictEqual(tap.pos, pos);
+        });
+      });
+
+      test('lone surrogates throw on all write paths', () => {
+        let elems = [
+          // Small-string path (<= 21 UTF-16 code units).
+          '\ud800', // Lone high surrogate.
+          '\udc00', // Lone low surrogate.
+          'abc\ud800', // Trailing lone high surrogate.
+          '\ud800\ud800', // High surrogate followed by high surrogate.
+          '\udc00\udc00', // Low surrogate followed by low surrogate.
+          'a'.repeat(20) + '\ud800', // 21 code units: small path edge.
+          // Large-string path (> 21 code units, shared encode buffer).
+          '\ud800' + 'a'.repeat(30),
+          'a'.repeat(30) + '\udc00',
+          'a'.repeat(21) + '\ud800', // 22 code units: large path edge.
+          // Fallback path past the 4096-byte shared encode buffer.
+          'a'.repeat(5000) + '\ud800',
+          '\udc00' + 'a'.repeat(5000)
+        ];
+        elems.forEach((s) => {
+          let tap = Tap.withCapacity(16384);
+          assert.throws(() => { tap.writeString(s); }, /lone surrogate/);
+          // Size-estimation passes (invalid taps) must fail identically.
+          let emptyTap = Tap.withCapacity(0);
+          assert.throws(() => { emptyTap.writeString(s); }, /lone surrogate/);
+        });
+      });
+
     });
 
     suite('bytes', () => {

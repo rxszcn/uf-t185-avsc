@@ -180,11 +180,54 @@ suite('types', () => {
           'ฉันกินกระจกได้ แต่มันไม่ทำให้ฉันเจ็บ',
           '\ud800\udfff'
         ],
-        invalid: [null, undefined, 1, 0]
+        invalid: [
+          null,
+          undefined,
+          1,
+          0,
+          // Lone surrogates cannot be encoded as valid UTF-8.
+          '\ud800',
+          '\udc00',
+          'lone \ud800 surrogate in a longer string'
+        ]
       }
     ];
 
     testType(builtins.StringType, data);
+
+    test('lone surrogates rejected consistently across write paths', () => {
+      let type = Type.forSchema('string');
+      let bad = [
+        '\ud800', // Small-string path (<= 21 code units).
+        'a'.repeat(21) + '\ud800', // Large-string path.
+        'a'.repeat(2000) + '\udc00' // Size-estimation path (shared tap overflow).
+      ];
+      bad.forEach((s) => {
+        assert(!type.isValid(s));
+        assert.throws(() => { type.toBuffer(s); }, /lone surrogate/);
+      });
+      // Map keys go through the same literal encoding choke point.
+      let mapType = Type.forSchema({type: 'map', values: 'long'});
+      assert.throws(() => { mapType.toBuffer({'\ud800': 1}); }, /lone surrogate/);
+    });
+
+    test('valid strings roundtrip across paths and thresholds', () => {
+      let type = Type.forSchema('string');
+      let good = [
+        '',
+        'hi!',
+        '\ud834\udd1e', // Astral character (valid surrogate pair).
+        'a'.repeat(19) + '\ud834\udd1e', // Small path edge (21 code units).
+        'a'.repeat(20) + '\ud834\udd1e', // Large path edge (22 code units).
+        'a'.repeat(2000), // Size-estimation path (shared tap is 1024 bytes).
+        '\ud834\udd1e'.repeat(600), // Past the shared tap, pair-heavy.
+        'a'.repeat(5000) // Past the shared 4096-byte encode buffer.
+      ];
+      good.forEach((s) => {
+        assert(type.isValid(s));
+        assert.strictEqual(type.fromBuffer(type.toBuffer(s)), s);
+      });
+    });
 
     test('fromBuffer string', () => {
       let type = Type.forSchema('string');
